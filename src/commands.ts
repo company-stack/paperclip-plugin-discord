@@ -2,9 +2,15 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { type DiscordEmbed, respondToInteraction } from "./discord-api.js";
 import { COLORS, METRIC_NAMES } from "./constants.js";
 
+interface InteractionOption {
+  name: string;
+  value?: string | number | boolean;
+  options?: InteractionOption[];
+}
+
 interface InteractionData {
   name: string;
-  options?: Array<{ name: string; value: string | number | boolean }>;
+  options?: InteractionOption[];
 }
 
 interface Interaction {
@@ -14,7 +20,7 @@ interface Interaction {
 }
 
 function getOption(
-  options: InteractionData["options"],
+  options: InteractionOption[] | undefined,
   name: string,
 ): string | undefined {
   return options
@@ -104,7 +110,7 @@ async function handleSlashCommand(
     });
   }
 
-  const subName = subcommand.name ?? String(subcommand.value);
+  const subName = subcommand.name;
 
   switch (subName) {
     case "status":
@@ -112,11 +118,11 @@ async function handleSlashCommand(
     case "approve":
       return handleApprove(
         ctx,
-        getOption(subcommand.options, "id"),
+        getOption(subcommand.options ?? [], "id"),
         member?.user.username,
       );
     case "budget":
-      return handleBudget(ctx, getOption(subcommand.options, "agent"));
+      return handleBudget(ctx, getOption(subcommand.options ?? [], "agent"));
     default:
       return respondToInteraction({
         type: 4,

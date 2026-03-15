@@ -126,7 +126,7 @@ export default definePlugin({
       notify(event, formatAgentRunFinished),
     );
 
-    // --- Per-company channel overrides (data/action pattern from Slack plugin) ---
+    // --- Per-company channel overrides ---
 
     ctx.data.register("channel-mapping", async (params) => {
       const companyId = String(params.companyId);
@@ -151,60 +151,58 @@ export default definePlugin({
 
     // --- Intelligence: agent-queryable tool ---
 
-    ctx.tools.register({
-      name: "discord_signals",
-      description:
-        "Query recent community signals from Discord (feature requests, pain points, maintainer directives).",
-      parameters: {
-        type: "object",
-        properties: {
-          companyId: { type: "string", description: "Company ID to query signals for" },
-          category: {
-            type: "string",
-            enum: ["feature_wish", "pain_point", "maintainer_directive", "sentiment"],
-            description: "Filter signals by category (optional)",
+    ctx.tools.register(
+      "discord_signals",
+      {
+        displayName: "Discord Signals",
+        description:
+          "Query recent community signals from Discord (feature requests, pain points, maintainer directives).",
+        parametersSchema: {
+          type: "object",
+          properties: {
+            companyId: { type: "string", description: "Company ID to query signals for" },
+            category: {
+              type: "string",
+              enum: ["feature_wish", "pain_point", "maintainer_directive", "sentiment"],
+              description: "Filter signals by category (optional)",
+            },
           },
+          required: ["companyId"],
         },
-        required: ["companyId"],
       },
-      handler: async (params) => {
-        const companyId = String(params.companyId);
+      async (params) => {
+        const p = params as Record<string, unknown>;
+        const companyId = String(p.companyId);
         const raw = await ctx.state.get({
           scopeKind: "company",
           scopeId: companyId,
           stateKey: "discord_intelligence",
         });
-        if (!raw) return { signals: [], lastScanned: null };
+        if (!raw) return { content: JSON.stringify({ signals: [], lastScanned: null }) };
 
         const data = raw as { signals: Array<{ category: string }>; lastScanned: string };
-        const category = params.category ? String(params.category) : null;
+        const category = p.category ? String(p.category) : null;
         const filtered = category
           ? data.signals.filter((s) => s.category === category)
           : data.signals;
 
-        return { signals: filtered, lastScanned: data.lastScanned };
+        return { content: JSON.stringify({ signals: filtered, lastScanned: data.lastScanned }) };
       },
-    });
+    );
 
     // --- Intelligence: scheduled scan ---
 
     if (config.enableIntelligence && config.intelligenceChannelIds.length > 0) {
-      ctx.jobs.schedule({
-        name: "discord-intelligence-scan",
-        cron: "0 */6 * * *", // every 6 hours
-        handler: async () => {
-          // Scan for all companies (use default guild for now)
-          // In a multi-company setup, each company would have its own guild config
-          await runIntelligenceScan(
-            ctx,
-            token,
-            config.defaultGuildId,
-            config.intelligenceChannelIds,
-            "default", // TODO: iterate companies
-          );
-        },
+      ctx.jobs.register("discord-intelligence-scan", async () => {
+        await runIntelligenceScan(
+          ctx,
+          token,
+          config.defaultGuildId,
+          config.intelligenceChannelIds,
+          "default",
+        );
       });
-      ctx.logger.info("Intelligence scanning scheduled (every 6h)", {
+      ctx.logger.info("Intelligence scan job registered", {
         channels: config.intelligenceChannelIds.length,
       });
     }
@@ -212,23 +210,21 @@ export default definePlugin({
     ctx.logger.info("Discord bot plugin started");
   },
 
-  async onWebhook(input: PluginWebhookInput) {
+  async onWebhook(input: PluginWebhookInput): Promise<void> {
     if (input.endpointKey === WEBHOOK_KEYS.discordInteractions) {
       const body = input.parsedBody as Record<string, unknown>;
       if (!body) return;
-
-      // Discord sends interactions as JSON to the configured endpoint
-      // We handle PING, slash commands, and button clicks
-      return handleInteraction(input.ctx, body as any);
+      // Handle the interaction but don't return the result
+      // (the webhook response is handled by the host)
+      await handleInteraction(input as unknown as PluginContext, body as any);
     }
   },
 
   async onValidateConfig(config) {
-    const c = config as Record<string, unknown>;
-    if (!c.discordBotTokenRef || typeof c.discordBotTokenRef !== "string") {
+    if (!config.discordBotTokenRef || typeof config.discordBotTokenRef !== "string") {
       return { ok: false, errors: ["discordBotTokenRef is required"] };
     }
-    if (!c.defaultChannelId || typeof c.defaultChannelId !== "string") {
+    if (!config.defaultChannelId || typeof config.defaultChannelId !== "string") {
       return { ok: false, errors: ["defaultChannelId is required"] };
     }
     return { ok: true };

@@ -31,7 +31,7 @@ const manifest: PaperclipPluginManifestV1 = {
     "instance.settings.register",
     "activity.log.write",
     "metrics.write",
-    "tools.register",
+    "agent.tools.register",
     "jobs.schedule",
   ],
   entrypoints: {
@@ -96,6 +96,43 @@ const manifest: PaperclipPluginManifestV1 = {
     },
     required: ["discordBotTokenRef", "defaultChannelId"],
   },
+  jobs: [
+    {
+      jobKey: "discord-intelligence-scan",
+      displayName: "Discord Intelligence Scan",
+      description:
+        "Periodically scan configured Discord channels for community signals (feature requests, pain points, maintainer directives).",
+      schedule: "0 */6 * * *",
+    },
+  ],
+  tools: [
+    {
+      name: "discord_signals",
+      displayName: "Discord Signals",
+      description:
+        "Query recent community signals from Discord (feature requests, pain points, maintainer directives).",
+      parametersSchema: {
+        type: "object",
+        properties: {
+          companyId: {
+            type: "string",
+            description: "Company ID to query signals for",
+          },
+          category: {
+            type: "string",
+            enum: [
+              "feature_wish",
+              "pain_point",
+              "maintainer_directive",
+              "sentiment",
+            ],
+            description: "Filter signals by category (optional)",
+          },
+        },
+        required: ["companyId"],
+      },
+    },
+  ],
   webhooks: [
     {
       endpointKey: WEBHOOK_KEYS.discordInteractions,
