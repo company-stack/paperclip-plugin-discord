@@ -2,6 +2,7 @@ import type { PluginContext } from "@paperclipai/plugin-sdk";
 import { type DiscordEmbed, respondToInteraction } from "./discord-api.js";
 import { COLORS, METRIC_NAMES } from "./constants.js";
 import { withRetry } from "./retry.js";
+import { handleAcpCommand } from "./acp-bridge.js";
 
 interface InteractionOption {
   name: string;
@@ -74,6 +75,70 @@ export const SLASH_COMMANDS = [
       },
     ],
   },
+  {
+    name: "acp",
+    description: "Manage coding agent sessions via Agent Client Protocol",
+    options: [
+      {
+        name: "spawn",
+        description: "Start a new coding agent session in a thread",
+        type: 1, // SUB_COMMAND
+        options: [
+          {
+            name: "agent",
+            description: "Agent name to spawn",
+            type: 3, // STRING
+            required: true,
+          },
+          {
+            name: "task",
+            description: "Task description for the agent",
+            type: 3,
+            required: true,
+          },
+        ],
+      },
+      {
+        name: "status",
+        description: "Check the status of an ACP session",
+        type: 1,
+        options: [
+          {
+            name: "session",
+            description: "The ACP session ID",
+            type: 3,
+            required: true,
+          },
+        ],
+      },
+      {
+        name: "cancel",
+        description: "Cancel a running ACP session",
+        type: 1,
+        options: [
+          {
+            name: "session",
+            description: "The ACP session ID",
+            type: 3,
+            required: true,
+          },
+        ],
+      },
+      {
+        name: "close",
+        description: "Close a completed ACP session and archive the thread",
+        type: 1,
+        options: [
+          {
+            name: "session",
+            description: "The ACP session ID",
+            type: 3,
+            required: true,
+          },
+        ],
+      },
+    ],
+  },
 ];
 
 export async function handleInteraction(
@@ -107,6 +172,12 @@ async function handleSlashCommand(
   member?: { user: { username: string } },
   cmdCtx?: CommandContext,
 ): Promise<unknown> {
+  // Route /acp commands to the ACP bridge
+  if (data.name === "acp") {
+    return handleAcpCommand(ctx, data);
+  }
+
+
   const subcommand = data.options?.[0];
   if (!subcommand) {
     return respondToInteraction({

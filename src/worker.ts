@@ -23,6 +23,7 @@ import {
 import { handleInteraction, SLASH_COMMANDS, type CommandContext } from "./commands.js";
 import { runIntelligenceScan, runBackfill } from "./intelligence.js";
 import { connectGateway } from "./gateway.js";
+import { handleAcpOutput, routeMessageToAcp, createAcpThread } from "./acp-bridge.js";
 
 type DiscordConfig = {
   discordBotTokenRef: string;
@@ -95,6 +96,44 @@ const plugin = definePlugin({
 
     ctx.events.on("plugin.stopping", async () => {
       gateway.close();
+    });
+
+    // --- ACP bridge: thread-bound coding agent sessions ---
+
+    ctx.events.on("acp:output", async (event: unknown) => {
+      const acpEvent = event as {
+        sessionId: string;
+        channelId: string;
+        threadId: string;
+        agentName: string;
+        output: string;
+        status?: "running" | "completed" | "failed";
+      };
+      await handleAcpOutput(ctx, token, acpEvent);
+    });
+
+    ctx.events.on("acp:thread.create", async (event: unknown) => {
+      const req = event as {
+        channelId: string;
+        agentName: string;
+        task: string;
+        sessionId: string;
+      };
+      const threadId = await createAcpThread(
+        ctx,
+        token,
+        req.channelId || config.defaultChannelId,
+        req.agentName,
+        req.task,
+        req.sessionId,
+      );
+      if (threadId) {
+        ctx.events.emit("acp:thread.created", {
+          sessionId: req.sessionId,
+          threadId,
+          channelId: req.channelId || config.defaultChannelId,
+        });
+      }
     });
 
     // --- Event subscriptions ---
