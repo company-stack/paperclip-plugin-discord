@@ -35,6 +35,14 @@ This is that plugin.
 - Clicking a button calls the Paperclip API and updates the Discord message inline
 - Identifies which Discord user acted (logged as `discord:{username}`)
 
+**HITL escalation**
+- Agents that get stuck can escalate to a dedicated Discord channel with full conversation context
+- Rich embed formatting (yellow for pending, green for resolved, red for timed out)
+- "Use Suggested Reply" button when the agent has a best-guess response
+- "Reply to Customer", "Override Agent", and "Dismiss" component buttons
+- Configurable timeout (default 15 min) with automatic default action
+- Works via Gateway WebSocket like approval buttons - no public URL needed
+
 **Per-type channel routing**
 - `approvalsChannelId` - Dedicated channel for approval notifications
 - `errorsChannelId` - Dedicated channel for agent errors
@@ -88,8 +96,13 @@ curl -X POST http://127.0.0.1:3100/api/plugins/install \
 | `enableIntelligence` | No | Enable community signal scanning (default: false) |
 | `intelligenceChannelIds` | No | Channel IDs to scan for signals |
 | `backfillDays` | No | Days of history to scan on first install (default: 90, max: 365) |
+| `escalationChannelId` | No | Dedicated channel for agent escalations |
+| `enableEscalations` | No | Enable escalation features (default: true) |
+| `escalationTimeoutMinutes` | No | Timeout before default action fires (default: 15) |
 
 ## Credits
+
+[@MatB57](https://github.com/MatB57) - Escalation channel concept, "Chat OS" vision for turning chat plugins into bidirectional agent command centers, and the HITL suggested-reply flow.
 
 [@leeknowsai](https://github.com/leeknowsai) - Worker bootstrap and packaging fix ([#1](https://github.com/mvanhorn/paperclip-plugin-discord/pull/1)), rich notification embeds, approval button UX, and per-type channel routing ([#4](https://github.com/mvanhorn/paperclip-plugin-discord/pull/4)). Most of the notification formatting and interactive approval flow is their work.
 
