@@ -139,8 +139,8 @@ curl -X POST http://127.0.0.1:3100/api/plugins/install \
 2. Add a bot to the application and copy the bot token
 3. Enable the MESSAGE CONTENT privileged intent (for intelligence scanning)
 4. Invite the bot to your server with `applications.commands` and `bot` scopes
-5. Store the bot token in your Paperclip secret provider
-6. Configure the plugin with your token reference, guild ID, and channel ID
+5. In Paperclip, go to **Settings → Secrets → Create new secret**, paste your bot token as the secret value, and copy the resulting UUID
+6. Configure the plugin with the secret UUID in `discordBotTokenRef`, your guild ID, and channel ID
 
 ## Configuration
 
@@ -189,6 +189,20 @@ curl -X POST http://127.0.0.1:3100/api/plugins/install \
 [@leeknowsai](https://github.com/leeknowsai) - Worker bootstrap and packaging fix ([#1](https://github.com/mvanhorn/paperclip-plugin-discord/pull/1)), rich notification embeds, approval button UX, and per-type channel routing ([#4](https://github.com/mvanhorn/paperclip-plugin-discord/pull/4)). Most of the notification formatting and interactive approval flow is their work.
 
 Notification event handler patterns adapted from PR [#398](https://github.com/paperclipai/paperclip/pull/398) by [@StartupBros](https://github.com/StartupBros).
+
+## Migration
+
+### v0.2.1
+
+The `discordBotTokenRef` field now requires a Paperclip secret reference (a UUID), not the raw token value. If you previously entered your raw bot token in the field, follow these steps to migrate:
+
+1. Go to **Settings → Secrets → Create new secret**
+2. Paste your Discord bot token as the secret value and save
+3. Copy the resulting UUID
+4. Open **Plugin Settings for Discord Bot** and paste the UUID into "Discord Bot Token"
+5. Save and restart the plugin
+
+The plugin will fail to activate if a raw token (non-UUID) is entered in the field.
 
 ## Development
 

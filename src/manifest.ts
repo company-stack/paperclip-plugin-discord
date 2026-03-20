@@ -46,9 +46,10 @@ const manifest: PaperclipPluginManifestV1 = {
     properties: {
       discordBotTokenRef: {
         type: "string",
+        format: "secret-ref",
         title: "Discord Bot Token (secret reference)",
         description:
-          "Reference to the Discord Bot token stored in your secret provider.",
+          "Secret UUID for your Discord Bot token. Create the secret in Settings → Secrets, then paste its UUID here.",
         default: DEFAULT_CONFIG.discordBotTokenRef,
       },
       defaultGuildId: {
