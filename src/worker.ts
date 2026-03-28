@@ -7,10 +7,13 @@ import {
   type PluginHealthDiagnostics,
 } from "@paperclipai/plugin-sdk";
 import { COLORS, METRIC_NAMES, PLUGIN_ID, WEBHOOK_KEYS, ACP_PLUGIN_EVENT_PREFIX } from "./constants.js";
+import { paperclipFetch } from "./paperclip-fetch.js";
 import {
   postEmbed,
+  postEmbedWithId,
   getApplicationId,
   registerSlashCommands,
+  respondToInteraction,
   type DiscordEmbed,
   type DiscordComponent,
 } from "./discord-api.js";
@@ -24,7 +27,7 @@ import {
 } from "./formatters.js";
 import { handleInteraction, SLASH_COMMANDS, type CommandContext } from "./commands.js";
 import { runIntelligenceScan, runBackfill } from "./intelligence.js";
-import { connectGateway } from "./gateway.js";
+import { connectGateway, type MessageCreateEvent } from "./gateway.js";
 import {
   handleAcpOutput,
   routeMessageToAgent,
@@ -38,6 +41,12 @@ import { DiscordAdapter } from "./adapter.js";
 import { processMediaMessage, type MediaAttachment } from "./media-pipeline.js";
 import { registerCommand, parseCommandMessage, executeCommand, listCommands } from "./custom-commands.js";
 import { registerWatch, checkWatches } from "./proactive-suggestions.js";
+
+// Module-level state captured during setup() so onWebhook() can reuse it.
+let _pluginCtx: PluginContext | null = null;
+let _cmdCtx: CommandContext | null = null;
+
+import { resolveCompanyId } from "./company-resolver.js";
 
 type DiscordConfig = {
   discordBotTokenRef: string;
@@ -64,6 +73,13 @@ type DiscordConfig = {
   enableCustomCommands: boolean;
   enableProactiveSuggestions: boolean;
   proactiveScanIntervalMinutes: number;
+  enableCommands: boolean;
+  enableInbound: boolean;
+  topicRouting: boolean;
+  digestMode: string;
+  dailyDigestTime: string;
+  bidailySecondTime: string;
+  tridailyTimes: string;
 };
 
 interface EscalationRecord {
@@ -122,13 +138,22 @@ const plugin = definePlugin({
     const token = await ctx.secrets.resolve(config.discordBotTokenRef);
     const baseUrl = config.paperclipBaseUrl || "http://localhost:3100";
     const retentionDays = config.intelligenceRetentionDays || 30;
-    const companyId = "default";
+
+    // Company ID is resolved lazily on first /clip command or job invocation,
+    // NOT during setup — startup-time API calls can cause worker activation to fail.
+    const companyId = "default"; // placeholder; jobs use resolveCompanyId(ctx) at runtime
+
     const cmdCtx: CommandContext = {
       baseUrl,
       companyId,
       token,
       defaultChannelId: config.defaultChannelId,
+      pluginCtx: ctx,
     };
+
+    // Store context at module level so onWebhook() can reuse it.
+    _pluginCtx = ctx;
+    _cmdCtx = cmdCtx;
 
     // --- Register slash commands with Discord ---
     if (config.defaultGuildId) {
@@ -147,10 +172,92 @@ const plugin = definePlugin({
       }
     }
 
+    // --- Reply routing handler for inbound messages ---
+    async function handleMessageCreate(message: MessageCreateEvent): Promise<void> {
+      if (config.enableInbound === false) return;
+      // Ignore bot messages
+      if (message.author.bot) return;
+      // Only handle replies to other messages
+      if (!message.message_reference?.message_id) return;
+
+      const refChannelId = message.message_reference.channel_id ?? message.channel_id;
+      const refMessageId = message.message_reference.message_id;
+
+      const mapping = await ctx.state.get({
+        scopeKind: "instance",
+        stateKey: `msg_${refChannelId}_${refMessageId}`,
+      }) as { entityId: string; entityType: string; companyId: string } | null;
+
+      if (!mapping) return;
+
+      const text = message.content;
+      if (!text?.trim()) return;
+
+      if (mapping.entityType === "escalation") {
+        // Route to escalation response
+        const record = await ctx.state.get({
+          scopeKind: "company",
+          scopeId: "default",
+          stateKey: `escalation_${mapping.entityId}`,
+        }) as EscalationRecord | null;
+
+        if (record && record.status === "pending") {
+          record.status = "resolved";
+          record.resolvedAt = new Date().toISOString();
+          record.resolvedBy = `discord:${message.author.username}`;
+          record.resolution = "human_reply";
+          await ctx.state.set(
+            { scopeKind: "company", scopeId: "default", stateKey: `escalation_${mapping.entityId}` },
+            record,
+          );
+          await ctx.metrics.write(METRIC_NAMES.escalationsResolved, 1);
+          ctx.events.emit("escalation-resolved", mapping.companyId, {
+            escalationId: mapping.entityId,
+            action: "human_reply",
+            resolvedBy: message.author.username,
+            responseText: text,
+          });
+        }
+
+        await ctx.metrics.write(METRIC_NAMES.inboundRouted, 1);
+        ctx.logger.info("Routed Discord reply to escalation", {
+          escalationId: mapping.entityId,
+          from: message.author.username,
+        });
+      } else if (mapping.entityType === "issue") {
+        // Route to issue comment
+        try {
+          await paperclipFetch(
+            `${baseUrl}/api/issues/${mapping.entityId}/comments`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                body: text,
+                authorUserId: `discord:${message.author.username}`,
+              }),
+            },
+          );
+          await ctx.metrics.write(METRIC_NAMES.inboundRouted, 1);
+          ctx.logger.info("Routed Discord reply to issue comment", {
+            issueId: mapping.entityId,
+            from: message.author.username,
+          });
+        } catch (err) {
+          ctx.logger.error("Failed to route inbound message", { error: String(err) });
+        }
+      }
+    }
+
     // --- Gateway connection for real-time interaction handling ---
-    const gateway = await connectGateway(ctx, token, async (interaction) => {
-      return handleInteraction(ctx, interaction as any, cmdCtx);
-    });
+    const gateway = await connectGateway(
+      ctx,
+      token,
+      async (interaction) => {
+        return handleInteraction(ctx, interaction as any, cmdCtx);
+      },
+      handleMessageCreate,
+    );
 
     ctx.events.on("plugin.stopping", async () => {
       gateway.close();
@@ -177,8 +284,24 @@ const plugin = definePlugin({
     ) => {
       const channelId = await resolveChannel(ctx, event.companyId, overrideChannelId || config.defaultChannelId);
       if (!channelId) return;
-      const delivered = await postEmbed(ctx, token, channelId, formatter(event, baseUrl));
-      if (delivered) {
+
+      const message = formatter(event, baseUrl);
+      const messageId = await postEmbedWithId(ctx, token, channelId, message);
+
+      if (messageId) {
+        // Store message mapping for reply routing
+        if (config.enableInbound !== false) {
+          await ctx.state.set(
+            { scopeKind: "instance", stateKey: `msg_${channelId}_${messageId}` },
+            {
+              entityId: event.entityId,
+              entityType: event.entityType,
+              companyId: event.companyId,
+              eventType: event.eventType,
+            },
+          );
+        }
+
         await ctx.activity.log({
           companyId: event.companyId,
           message: `Forwarded ${event.eventType} to Discord`,
@@ -685,8 +808,125 @@ const plugin = definePlugin({
       );
 
       ctx.jobs.register("check-watches", async () => {
-        await checkWatches(ctx, token, companyId, config.defaultChannelId);
+        const cid = await resolveCompanyId(ctx);
+        await checkWatches(ctx, token, cid, config.defaultChannelId);
       });
+    }
+
+    // ===================================================================
+    // Daily Digest Job
+    // ===================================================================
+
+    const effectiveDigestMode = config.digestMode ?? "off";
+
+    if (effectiveDigestMode !== "off") {
+      ctx.jobs.register("discord-daily-digest", async () => {
+        const nowHour = new Date().getUTCHours();
+        const nowMin = new Date().getUTCMinutes();
+        if (nowMin >= 5) return; // only fire within first 5 min of the hour
+
+        const parseHour = (t: string) => {
+          const [h] = (t || "").split(":");
+          return parseInt(h ?? "", 10);
+        };
+        const firstHour = parseHour(config.dailyDigestTime || "09:00");
+        const secondHour = parseHour(config.bidailySecondTime || "17:00");
+        const tridailyHours = (config.tridailyTimes || "07:00,13:00,19:00")
+          .split(",")
+          .map((t) => parseHour(t.trim()));
+
+        let shouldSend = false;
+        if (effectiveDigestMode === "daily") {
+          shouldSend = nowHour === firstHour;
+        } else if (effectiveDigestMode === "bidaily") {
+          shouldSend = nowHour === firstHour || nowHour === secondHour;
+        } else if (effectiveDigestMode === "tridaily") {
+          shouldSend = tridailyHours.includes(nowHour);
+        }
+        if (!shouldSend) return;
+
+        const companies = await ctx.companies.list();
+        for (const company of companies) {
+          const channelId = await resolveChannel(ctx, company.id, config.defaultChannelId);
+          if (!channelId) continue;
+
+          try {
+            const agents = await ctx.agents.list({ companyId: company.id });
+            const activeAgents = agents.filter((a: { status: string }) => a.status === "active");
+            const issues = await ctx.issues.list({ companyId: company.id, limit: 50 });
+
+            const now = Date.now();
+            const oneDayMs = 24 * 60 * 60 * 1000;
+            const completedToday = issues.filter((i: { status: string; completedAt?: Date | null }) =>
+              i.status === "done" && i.completedAt && (now - new Date(i.completedAt).getTime()) < oneDayMs
+            );
+            const createdToday = issues.filter((i: { createdAt: Date }) =>
+              (now - new Date(i.createdAt).getTime()) < oneDayMs
+            );
+
+            const inProgress = issues.filter((i: { status: string }) => i.status === "in_progress");
+            const inReview = issues.filter((i: { status: string }) => i.status === "in_review");
+            const blocked = issues.filter((i: { status: string }) => i.status === "blocked");
+
+            const dateStr = new Date().toISOString().split("T")[0];
+            const digestLabel = effectiveDigestMode === "bidaily" ? "Digest" : "Daily Digest";
+            const companyLabel = company.name ? ` — ${company.name}` : "";
+
+            const fields: Array<{ name: string; value: string; inline?: boolean }> = [
+              { name: "✅ Tasks Completed", value: String(completedToday.length), inline: true },
+              { name: "📋 Tasks Created", value: String(createdToday.length), inline: true },
+              { name: "🤖 Active Agents", value: `${activeAgents.length}/${agents.length}`, inline: true },
+            ];
+
+            if (activeAgents.length > 0) {
+              fields.push({
+                name: "⭐ Top Performer",
+                value: (activeAgents[0] as { name: string }).name,
+                inline: true,
+              });
+            }
+
+            const formatIssueList = (items: Array<{ identifier?: string | null; id: string; title: string }>) =>
+              items.slice(0, 10).map((i) => `• **${i.identifier ?? i.id}** — ${i.title}`).join("\n");
+
+            if (inProgress.length > 0) {
+              fields.push({ name: `🔄 In Progress (${inProgress.length})`, value: formatIssueList(inProgress) });
+            }
+            if (inReview.length > 0) {
+              fields.push({ name: `🔍 In Review (${inReview.length})`, value: formatIssueList(inReview) });
+            }
+            if (blocked.length > 0) {
+              fields.push({ name: `🚫 Blocked (${blocked.length})`, value: formatIssueList(blocked) });
+            }
+
+            const embeds: DiscordEmbed[] = [
+              {
+                title: `📊 ${digestLabel}${companyLabel} — ${dateStr}`,
+                color: COLORS.BLUE,
+                fields,
+                footer: { text: "Paperclip" },
+                timestamp: new Date().toISOString(),
+              },
+            ];
+
+            await postEmbed(ctx, token, channelId, { embeds });
+            await ctx.metrics.write(METRIC_NAMES.digestSent, 1);
+          } catch (err) {
+            ctx.logger.error("Daily digest failed for company", { companyId: company.id, error: String(err) });
+            await postEmbed(ctx, token, channelId, {
+              embeds: [{
+                title: "📊 Daily Digest",
+                description: "Could not generate digest. Check plugin logs for details.",
+                color: COLORS.RED,
+                footer: { text: "Paperclip" },
+                timestamp: new Date().toISOString(),
+              }],
+            });
+          }
+        }
+      });
+
+      ctx.logger.info("Daily digest job registered", { mode: effectiveDigestMode });
     }
 
     // --- Per-company channel overrides ---
@@ -756,12 +996,13 @@ const plugin = definePlugin({
 
     if (config.enableIntelligence && config.intelligenceChannelIds.length > 0) {
       ctx.jobs.register("discord-intelligence-scan", async () => {
+        const cid = await resolveCompanyId(ctx);
         await runIntelligenceScan(
           ctx,
           token,
           config.defaultGuildId,
           config.intelligenceChannelIds,
-          companyId,
+          cid,
           retentionDays,
         );
       });
@@ -773,27 +1014,35 @@ const plugin = definePlugin({
     // --- Backfill ---
 
     if (config.enableIntelligence && config.intelligenceChannelIds.length > 0) {
-      const existing = await ctx.state.get({
-        scopeKind: "company",
-        scopeId: companyId,
-        stateKey: "discord_intelligence",
-      }) as { backfillComplete?: boolean } | null;
+      // Backfill also deferred to avoid startup-time company resolution.
+      // It runs as an async task after setup completes.
+      const tryBackfill = async () => {
+        const cid = await resolveCompanyId(ctx);
+        const existing = await ctx.state.get({
+          scopeKind: "company",
+          scopeId: cid,
+          stateKey: "discord_intelligence",
+        }) as { backfillComplete?: boolean } | null;
 
-      if (!existing?.backfillComplete) {
-        ctx.logger.info("First install detected, starting historical backfill...");
-        await runBackfill(
-          ctx,
-          token,
-          config.defaultGuildId,
-          config.intelligenceChannelIds,
-          companyId,
-          config.backfillDays ?? 90,
-        );
-      }
+        if (!existing?.backfillComplete) {
+          ctx.logger.info("First install detected, starting historical backfill...");
+          await runBackfill(
+            ctx,
+            token,
+            config.defaultGuildId,
+            config.intelligenceChannelIds,
+            cid,
+            config.backfillDays ?? 90,
+          );
+        }
+      };
+      // Fire-and-forget so it doesn't block setup completion.
+      tryBackfill().catch((err) => ctx.logger.warn("Backfill failed", { error: String(err) }));
 
       ctx.actions.register("trigger-backfill", async () => {
+        const cid = await resolveCompanyId(ctx);
         await ctx.state.set(
-          { scopeKind: "company", scopeId: companyId, stateKey: "discord_intelligence" },
+          { scopeKind: "company", scopeId: cid, stateKey: "discord_intelligence" },
           { signals: [], backfillComplete: false },
         );
         const signals = await runBackfill(
@@ -801,7 +1050,7 @@ const plugin = definePlugin({
           token,
           config.defaultGuildId,
           config.intelligenceChannelIds,
-          companyId,
+          cid,
           config.backfillDays ?? 90,
         );
         return { ok: true, signalsFound: signals.length };
@@ -815,11 +1064,32 @@ const plugin = definePlugin({
     if (input.endpointKey === WEBHOOK_KEYS.discordInteractions) {
       const body = input.parsedBody as Record<string, unknown>;
       if (!body) return;
-      await handleInteraction(
-        input as unknown as PluginContext,
-        body as any,
-        { baseUrl: "http://localhost:3100", companyId: "default", token: "", defaultChannelId: "" },
-      );
+
+      const ctx = _pluginCtx;
+      const cmdCtx = _cmdCtx;
+
+      if (!ctx || !cmdCtx) {
+        // Return a valid Discord interaction response even before setup completes.
+        // The host framework forwards the return value as the HTTP response body.
+        return respondToInteraction({
+          type: 4,
+          content: "Plugin is still starting up. Please try again in a moment.",
+          ephemeral: true,
+        }) as unknown as void;
+      }
+
+      try {
+        const response = await handleInteraction(ctx, body as any, cmdCtx);
+        // The host framework forwards this as the HTTP response body to Discord.
+        return response as unknown as void;
+      } catch (err) {
+        ctx.logger.error("Interaction handler failed", { error: String(err) });
+        return respondToInteraction({
+          type: 4,
+          content: "An error occurred while processing this command. Please try again.",
+          ephemeral: true,
+        }) as unknown as void;
+      }
     }
   },
 

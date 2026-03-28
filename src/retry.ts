@@ -28,6 +28,21 @@ function isRetryable(error: unknown): { retryable: boolean; retryAfterMs?: numbe
   return { retryable: false };
 }
 
+/**
+ * Throw a retryable error if the response has a status code that withRetry
+ * can retry (429, 500, 502, 503).  Native fetch resolves on non-OK responses
+ * rather than throwing, so callers inside a withRetry callback should call
+ * this to enable status-code-based retry.
+ */
+export function throwOnRetryableStatus(resp: Response): void {
+  if (RETRYABLE_STATUS_CODES.has(resp.status)) {
+    const err = new Error(`HTTP ${resp.status}`) as Error & RetryableError;
+    err.status = resp.status;
+    err.headers = resp.headers;
+    throw err;
+  }
+}
+
 export async function withRetry<T>(
   fn: () => Promise<T>,
   opts: RetryOptions = {},

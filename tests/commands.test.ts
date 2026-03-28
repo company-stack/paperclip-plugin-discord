@@ -1,6 +1,15 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { handleInteraction, SLASH_COMMANDS, type CommandContext } from "../src/commands.js";
 import { COLORS } from "../src/constants.js";
+
+const mockPaperclipFetch = vi.fn().mockResolvedValue({ ok: true, status: 200, headers: new Headers(), text: () => Promise.resolve("") });
+vi.mock("../src/paperclip-fetch.js", () => ({
+  paperclipFetch: (...args: unknown[]) => mockPaperclipFetch(...args),
+}));
+
+beforeEach(() => {
+  mockPaperclipFetch.mockReset().mockResolvedValue({ ok: true, status: 200, headers: new Headers(), text: () => Promise.resolve("") });
+});
 
 function makeCtx(overrides: Record<string, unknown> = {}) {
   return {
@@ -139,11 +148,35 @@ describe("/clip approve", () => {
       cmdCtx,
     ) as any;
 
-    expect(ctx.http.fetch).toHaveBeenCalledWith(
+    expect(mockPaperclipFetch).toHaveBeenCalledWith(
       "https://app.example.com/api/approvals/apr-1/approve",
       expect.objectContaining({ method: "POST" }),
     );
     expect(result.data.embeds[0].color).toBe(COLORS.GREEN);
+  });
+
+  it("returns error when API returns non-OK status (Bug 1 regression)", async () => {
+    mockPaperclipFetch.mockResolvedValue({
+      ok: false,
+      status: 422,
+      headers: new Headers(),
+      text: () => Promise.resolve("Unprocessable Entity"),
+    });
+    const ctx = makeCtx();
+    const result = await handleInteraction(
+      ctx,
+      {
+        type: 2,
+        data: { name: "clip", options: [{ name: "approve", options: [{ name: "id", value: "apr-bad" }] }] },
+        member: { user: { username: "testuser" } },
+      },
+      defaultCmdCtx,
+    ) as any;
+
+    expect(result.type).toBe(4);
+    expect(result.data.content).toContain("Failed to approve");
+    expect(result.data.content).toContain("API 422");
+    expect(result.data.flags).toBe(64); // ephemeral
   });
 });
 
@@ -213,7 +246,7 @@ describe("button clicks", () => {
       cmdCtx,
     ) as any;
 
-    expect(ctx.http.fetch).toHaveBeenCalledWith(
+    expect(mockPaperclipFetch).toHaveBeenCalledWith(
       "https://app.example.com/api/approvals/apr-1/approve",
       expect.objectContaining({ method: "POST" }),
     );
@@ -234,12 +267,72 @@ describe("button clicks", () => {
       cmdCtx,
     ) as any;
 
-    expect(ctx.http.fetch).toHaveBeenCalledWith(
+    expect(mockPaperclipFetch).toHaveBeenCalledWith(
       "https://app.example.com/api/approvals/apr-2/reject",
       expect.objectContaining({ method: "POST" }),
     );
     expect(result.type).toBe(7);
     expect(result.data.embeds[0].description).toContain("Rejected");
+  });
+
+  it("shows failure when approve API call fails", async () => {
+    mockPaperclipFetch.mockRejectedValueOnce(new Error("All resolved IPs for localhost are in private/reserved ranges"));
+    const ctx = makeCtx();
+    const result = await handleInteraction(
+      ctx,
+      {
+        type: 3,
+        data: { name: "button", custom_id: "approval_approve_apr-fail" },
+        member: { user: { username: "clicker" } },
+      },
+      defaultCmdCtx,
+    ) as any;
+
+    expect(result.type).toBe(7);
+    expect(result.data.embeds[0].title).toBe("Approval Failed");
+    expect(result.data.embeds[0].color).toBe(COLORS.RED);
+    expect(result.data.embeds[0].description).toContain("private/reserved");
+  });
+
+  it("shows failure when reject API call fails", async () => {
+    mockPaperclipFetch.mockRejectedValueOnce(new Error("Network error"));
+    const ctx = makeCtx();
+    const result = await handleInteraction(
+      ctx,
+      {
+        type: 3,
+        data: { name: "button", custom_id: "approval_reject_apr-fail" },
+        member: { user: { username: "clicker" } },
+      },
+      defaultCmdCtx,
+    ) as any;
+
+    expect(result.type).toBe(7);
+    expect(result.data.embeds[0].title).toBe("Rejection Failed");
+    expect(result.data.embeds[0].color).toBe(COLORS.RED);
+  });
+
+  it("shows failure when API returns non-ok status", async () => {
+    mockPaperclipFetch.mockResolvedValue({
+      ok: false,
+      status: 403,
+      headers: new Headers(),
+      text: () => Promise.resolve("Forbidden"),
+    });
+    const ctx = makeCtx();
+    const result = await handleInteraction(
+      ctx,
+      {
+        type: 3,
+        data: { name: "button", custom_id: "approval_approve_apr-403" },
+        member: { user: { username: "clicker" } },
+      },
+      defaultCmdCtx,
+    ) as any;
+
+    expect(result.type).toBe(7);
+    expect(result.data.embeds[0].title).toBe("Approval Failed");
+    expect(result.data.embeds[0].description).toContain("API 403");
   });
 });
 
@@ -528,7 +621,7 @@ describe("SLASH_COMMANDS", () => {
     const clip = SLASH_COMMANDS[0]!;
     expect(clip.name).toBe("clip");
     const subNames = clip.options.map((o) => o.name);
-    expect(subNames).toEqual(["status", "approve", "budget"]);
+    expect(subNames).toEqual(["status", "approve", "budget", "issues", "agents", "help", "connect", "connect-channel", "digest", "commands"]);
 
     const acp = SLASH_COMMANDS[1]!;
     expect(acp.name).toBe("acp");
