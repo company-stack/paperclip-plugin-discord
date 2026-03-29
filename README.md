@@ -1,6 +1,7 @@
 # paperclip-plugin-discord
 
 [![npm](https://img.shields.io/npm/v/paperclip-plugin-discord)](https://www.npmjs.com/package/paperclip-plugin-discord)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 Bidirectional Discord integration for [Paperclip](https://github.com/paperclipai/paperclip). Push agent notifications to Discord, receive slash commands, approve requests with interactive buttons, gather community intelligence, run multi-agent sessions in threads, process media attachments, register custom commands, and deploy proactive agent suggestions.
 
@@ -171,7 +172,7 @@ curl -X POST http://127.0.0.1:3100/api/plugins/install \
 2. Add a bot to the application and copy the bot token
 3. Enable the MESSAGE CONTENT privileged intent (for intelligence scanning)
 4. Invite the bot to your server with `applications.commands` and `bot` scopes
-5. In Paperclip, go to **Settings → Secrets → Create new secret**, paste your bot token as the secret value, and copy the resulting UUID
+5. In Paperclip, go to **Settings -> Secrets -> Create new secret**, paste your bot token as the secret value, and copy the resulting UUID
 6. Configure the plugin with the secret UUID in `discordBotTokenRef`, your guild ID, and channel ID
 
 ## Configuration
@@ -231,7 +232,7 @@ Notification event handler patterns adapted from PR [#398](https://github.com/pa
 
 ## Changelog
 
-### v0.3.0 — Telegram Feature Parity
+### v0.3.0 - Telegram Feature Parity
 
 Brings the Discord plugin to full parity with the Telegram plugin across 14 feature gaps.
 
@@ -251,7 +252,7 @@ Brings the Discord plugin to full parity with the Telegram plugin across 14 feat
 
 The `discordBotTokenRef` field now requires a Paperclip secret reference (a UUID), not the raw token value. If you previously entered your raw bot token in the field, follow these steps to migrate:
 
-1. Go to **Settings → Secrets → Create new secret**
+1. Go to **Settings -> Secrets -> Create new secret**
 2. Paste your Discord bot token as the secret value and save
 3. Copy the resulting UUID
 4. Open **Plugin Settings for Discord Bot** and paste the UUID into "Discord Bot Token"
@@ -268,7 +269,13 @@ pnpm test
 pnpm build
 ```
 
-238 unit tests covering formatters, commands, intelligence, session registry, media pipeline, custom commands, proactive suggestions, retry logic, workflow engine, and Telegram-parity features.
+323 tests covering formatters, commands, intelligence, session registry, media pipeline, custom commands, proactive suggestions, retry logic, workflow engine, and Telegram-parity features.
+
+## Contributing
+
+Issues and PRs welcome at [github.com/mvanhorn/paperclip-plugin-discord](https://github.com/mvanhorn/paperclip-plugin-discord).
+
+Auto-publishes to npm on push to `main` via OIDC trusted publishing.
 
 ## License
 
